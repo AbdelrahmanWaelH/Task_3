@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../api'
 
@@ -47,8 +47,26 @@ export default function AllPerks() {
     // This effect depends on [perks], so it re-runs whenever perks changes
   }, [perks]) // Dependency: re-run when perks array changes
 
+  // Load all perks on initial mount
+  useEffect(() => {
+    loadAllPerks()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // Debounced auto-search: whenever searchQuery or merchantFilter changes,
+  // wait briefly and then reload perks. This keeps the UI responsive
+  // while avoiding excessive network requests.
+  useEffect(() => {
+    const t = setTimeout(() => {
+      loadAllPerks()
+    }, 300)
+
+    return () => clearTimeout(t)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchQuery, merchantFilter])
+
   
-  async function loadAllPerks() {
+  async function loadAllPerks(overrides = {}) {
     // Reset error state before new request
     setError('')
     
@@ -56,19 +74,23 @@ export default function AllPerks() {
     setLoading(true)
     
     try {
+      // Compute params using overrides (useful for reset) or current state
+      const search = (typeof overrides.search !== 'undefined') ? overrides.search : searchQuery
+      const merchant = (typeof overrides.merchant !== 'undefined') ? overrides.merchant : merchantFilter
+
       // Make GET request to /api/perks/all with query parameters
       const res = await api.get('/perks/all', {
         params: {
-          // Only include search param if searchQuery is not empty
-          search: searchQuery.trim() || undefined,
-          // Only include merchant param if merchantFilter is not empty
-          merchant: merchantFilter.trim() || undefined
+          // Only include search param if search is not empty
+          search: (search || '').trim() || undefined,
+          // Only include merchant param if merchant is not empty
+          merchant: (merchant || '').trim() || undefined
         }
       })
-      
+
       // Update perks state with response data
       setPerks(res.data.perks)
-      
+
     } catch (err) {
       // Handle errors (network failure, server error, etc.)
       console.error('Failed to load perks:', err)
@@ -100,6 +122,8 @@ export default function AllPerks() {
     // will automatically trigger and reload all perks
     setSearchQuery('')
     setMerchantFilter('')
+    // Immediately load all perks without filters
+    loadAllPerks({ search: '', merchant: '' })
   }
 
   
@@ -136,7 +160,8 @@ export default function AllPerks() {
                 type="text"
                 className="input"
                 placeholder="Enter perk name..."
-                
+                value={searchQuery}
+                onChange={e => setSearchQuery(e.target.value)}
               />
               <p className="text-xs text-zinc-500 mt-1">
                 Auto-searches as you type, or press Enter / click Search
@@ -151,7 +176,8 @@ export default function AllPerks() {
               </label>
               <select
                 className="input"
-                
+                value={merchantFilter}
+                onChange={e => setMerchantFilter(e.target.value)}
               >
                 <option value="">All Merchants</option>
                 
@@ -217,7 +243,7 @@ export default function AllPerks() {
           
           <Link
             key={perk._id}
-           
+            to={`/perks/${perk._id}`}
             className="card hover:shadow-lg transition-shadow cursor-pointer"
           >
             {/* Perk Title */}

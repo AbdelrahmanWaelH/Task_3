@@ -1,5 +1,7 @@
 import Joi from 'joi';
+import mongoose from 'mongoose';
 import { Perk } from '../models/Perk.js';
+import { User } from '../models/User.js';
 
 // validation schema for creating/updating a perk
 const perkSchema = Joi.object({
@@ -69,12 +71,62 @@ export async function getAllPerksPublic(req, res, next) {
       query.merchant = merchant.trim();
     }
     
-    // Fetch perks with the built query, populate creator info, and sort by newest first
-    const perks = await Perk
-      .find(query)
-      .populate('createdBy', 'name email') // Include creator information
-      .sort({ createdAt: -1 })
-      .lean();
+    // Fetch perks with the built query and sort by newest first
+    const perks = await Perk.find(query).sort({ createdAt: -1 }).lean();
+
+    // Safely attach creator info without relying on Mongoose populate
+    // which will attempt to cast whatever is in `createdBy` to ObjectId
+    if (perks.length > 0) {
+      // Collect createdBy values and divide them into ObjectId vs string keys
+      const idSet = new Set();
+      const stringKeys = new Set();
+
+      for (const p of perks) {
+        if (!p.createdBy) continue;
+        const cb = String(p.createdBy);
+        if (mongoose.Types.ObjectId.isValid(cb)) idSet.add(cb);
+        else stringKeys.add(cb);
+      }
+
+      // Fetch users that match the ObjectId set
+      const usersById = idSet.size
+        ? await User.find({ _id: { $in: [...idSet] } }).select('name email').lean()
+        : [];
+
+      // For string keys (e.g., legacy username stored instead of ObjectId),
+      // attempt to resolve by email or name. We try both to be helpful.
+      const usersByString = [];
+      if (stringKeys.size) {
+        const lookups = [...stringKeys].map(async key => {
+          // try email match first when it contains @
+          if (key.includes('@')) {
+            return User.findOne({ email: key.toLowerCase() }).select('name email').lean();
+          }
+          // otherwise try name
+          return User.findOne({ name: key }).select('name email').lean();
+        });
+        const resolved = await Promise.all(lookups);
+        for (const u of resolved) if (u) usersByString.push(u);
+      }
+
+      // Build a lookup map for quick replacement
+      const userMapById = new Map(usersById.map(u => [String(u._id), u]));
+      const userMapByKey = new Map(usersByString.map(u => [u.email?.toLowerCase() || u.name, u]));
+
+      // Attach creator object where possible, otherwise keep original value
+      for (const p of perks) {
+        if (!p.createdBy) continue;
+        const cb = String(p.createdBy);
+        if (userMapById.has(cb)) {
+          p.createdBy = userMapById.get(cb);
+        } else if (userMapByKey.has(cb) || userMapByKey.has(cb.toLowerCase())) {
+          p.createdBy = userMapByKey.get(cb) || userMapByKey.get(cb.toLowerCase());
+        } else {
+          // leave createdBy as-is (string) or set to null to avoid populate errors
+          p.createdBy = null;
+        }
+      }
+    }
 
     res.json({ perks });
   } catch (err) {
